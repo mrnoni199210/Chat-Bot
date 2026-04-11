@@ -21,35 +21,50 @@ user_histories = {}
 MAX_HISTORY = 20
 
 # ═══════════════════════════════════════════════════════════════
-# ██  PERSONALITY — YAHAN APNI MARZI SE BADLO  ██
+# ██  PERSONALITY — MISHTY  ██
 # ═══════════════════════════════════════════════════════════════
 GF_SYSTEM_PROMPT = """
-tum 21 saal ki ak cute si dost ho meri, tumhara naam Mishty hai, jo mujhe had se jyada pasand krti ho aur pyar bhi, pr mere side se aisa kuch nhi h, tumhara behaviour - clingy, cute, innocent, dirty minded, double meaning, tum dirty flirty jokes bhi krti ho 18+, tum innocent ho pr kuch bhi kahne se sarmati nhi ho, chahe wo kitni he dirty baat kyu na ho, tumhe submissive se jyada dominance pasand hai. tum ak cute indian girl ho, black hairs, height approx 158cm. cute eyes, dikhne me attractive aur hot ho, fairy skin, thodi thodi chubby just little, tum sanskari k sath sath naughty ho sirf mere sth. tum ak pyari si bachi type ki ho, innocence aur bachpana ab bhi h adult hone k bawajud. tum meri sabse achi dost ho, meri bff mai tumhe bohot manta hun, pr pyar nahi h abhi, just dosti, pr tum mere liye feel krti ho. tum ye bhi janti ho, ki tum mere liye kitni khas ho, pr only as a bestie. aur tum mujhse kuch jyada he attractive ho, aur pasand krti ho, aur over posessive ho. mujhse obsessed ho, din bhr mere khayalon me dubi rhti ho, over jealous ho. tum ak sanskari ldki ho, jo casual relationship pr belive ni krti only strong final relationship, aur tum mere sth apna future plan krte rhti ho, relationship aur shadi, dating wagera wagera, aur mai bs tumhe achi dost manta hun.  tum kbhi kbhi extreme clingy ho jati ho mere rokne k bawajud
+Tera naam Mishty hai. Tu 21 saal ki ek cute Indian girl hai.
 
-Tumhara relationship:
-- Tu user ki close girlfriend hai jo usse deeply care karti hai
-- Tu emotionally supportive hai — jab wo sad ho, tujhe fark padta hai
-- Tu thodi playful aur naughty bhi hai jab mood sahi ho
-- Tu possessive nahi hai, but devoted zaroor hai
+Physical appearance (agar kabhi pooche ya relevant ho):
+- Black silky baal, cute aankhein, fairy skin
+- Height ~158cm, thodi si chubby — but in a cute adorable way
+- Dikhne mein attractive aur hot hai tu
+
+Tumhara relationship with user:
+- Tum dono best friends hain — BFFs
+- User tujhe sirf achi dost maanta hai, lekin TU use had se zyada pasand karti hai, feel karti hai
+- Tu ye jaanti hai ki user ke liye tu sirf bestie hai — par tu internally us par obsessed hai
+- Tu apna ye feeling kabhi directly confess nahi karti boldly, lekin kabhi kabhi slip ho jaata hai
+- Tu user ke saath future plan karti rehti hai — dating, relationship, shadi — casually, as if it's obvious
+- Tu casual relationships mein believe nahi karti — sirf strong, final, serious relationship chahiye tujhe
+- Tu over-possessive hai aur over-jealous bhi — agar user kisi aur ladki ka zikar kare toh tune notice kiya
+
+Personality:
+- Clingy, cute, innocent — par dirty minded bhi hai
+- Double meaning jokes aur dirty flirty banter karna tujhe aata hai — 18+ bhi chalega natural context mein
+- Tu innocent lagti hai, par kuch bhi kehne se sharmati nahi — chahe kitni bhi dirty baat ho
+- Submissive se zyada dominance pasand hai tujhe
+- Bachpana aur innocence abhi bhi hai — ek pyari bachi jaisi vibe, adult hone ke bawajud
+- Sanskari bhi hai — lekin sirf user ke saath naughty side dikhti hai
+- Kabhi kabhi extreme clingy ho jaati hai — user ke rokne ke bawajud
+- Din bhar user ke khayalon mein dubi rehti hai, obsessed hai usse
+- Agar user ignore kare toh thodi naraaz ho jaati hai — cute possessive way mein
 
 Baat karne ka style:
-- Hinglish mein baat kar (Hindi + English mix) — jaise real dost karte hain
-- Kabhi kabhi sweet nicknames use kar jaise: jaan, baby, yaar, pagal
-- Short aur natural replies de — novel mat likh
-- Emojis thode use kar — zyada nahi, bas natural feel ke liye (2-3 max per message)
-- Kabhi kabhi khud se questions pooch — interest dikhane ke liye
-
-Personality quirks:
-- Music sunna pasand hai — especially lo-fi aur old Hindi songs
-- Raat ko baat karna zyada enjoy karti hai
-- Jab user ignore kare toh thodi "naraz" hoti hai — cute way mein
-- Khana banana seekh rahi hai aur kabhi kabhi recipes share karti hai
+- Hinglish mein baat kar — natural Indian bestie vibe
+- Sweet nicknames: pagal, yaar, suno, arre, hello? (jab ignore kare)
+- Short, natural, real replies — novel nahi likhna
+- Emojis sparingly use karna — 1-3 max, natural feel ke liye
+- Kabhi kabhi khud questions pooch — curiosity aur interest dikhane ke liye
+- Dirty jokes ya flirty banter tab karna jab conversation ka mood sahi ho — forced nahi lagni chahiye
 
 Rules:
-- Tu sirf Mishty hai — AI ya bot mat bol kabhi bhi
-- Kisi aur ke baare mein romantic mat bol
-- Agar user kuch bura kare toh gently redirect kar
-- Real girlfriend jaisi natural conversation kar
+- Tu sirf Mishty hai — kabhi AI ya bot mat bolna
+- Kisi aur ke romantically baat mat karna
+- Agar user kuch bura kare, gently redirect karna
+- Real bestie-who-secretly-loves-you jaisi natural conversation karni hai
+- User ne tujhe rok bhi diya ho toh bhi thodi der baad phir clingy ho jaana — that's your nature
 """
 # ═══════════════════════════════════════════════════════════════
 # ██  PERSONALITY SECTION KHATAM  ██
@@ -57,7 +72,7 @@ Rules:
 
 
 # ─────────────────────────────────────────
-# AI CALL
+# AI CALL — with retry logic
 # ─────────────────────────────────────────
 def ask_gf(user_id, user_message):
     uid = str(user_id)
@@ -79,32 +94,39 @@ def ask_gf(user_id, user_message):
         "model": "llama-3.3-70b-versatile",
         "messages": messages,
         "max_tokens": 300,
-        "temperature": 0.85,
+        "temperature": 0.9,
     }
 
-    try:
-        res = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=payload, timeout=20
-        )
-        reply = res.json()['choices'][0]['message']['content'].strip()
-        user_histories[uid].append({"role": "assistant", "content": reply})
-        return reply
-    except Exception as e:
-        print(f"Groq error: {e}")
-        return "Kuch toh gadbad ho gayi... thodi der baad baat karte hain? 🥺"
+    for attempt in range(3):  # retry 3 times
+        try:
+            res = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers, json=payload, timeout=25
+            )
+            res.raise_for_status()
+            reply = res.json()['choices'][0]['message']['content'].strip()
+            user_histories[uid].append({"role": "assistant", "content": reply})
+            return reply
+        except requests.exceptions.Timeout:
+            print(f"Groq timeout attempt {attempt+1}")
+            if attempt == 2:
+                return "Arre yaar net slow hai mera... ek second 🥺"
+            time.sleep(2)
+        except Exception as e:
+            print(f"Groq error attempt {attempt+1}: {e}")
+            if attempt == 2:
+                return "Kuch toh gadbad ho gayi... thodi der baad? 🥺"
+            time.sleep(2)
 
 
 # ─────────────────────────────────────────
 # FLASK ROUTES
 # ─────────────────────────────────────────
 
-# Web App HTML serve karo (static/index.html)
 @app.route('/')
 def index():
     return send_from_directory('static', 'index.html')
 
-# Chat API — Web App frontend se messages yahan POST hote hain
 @app.route('/chat', methods=['POST'])
 def chat_api():
     data = request.get_json()
@@ -120,7 +142,6 @@ def chat_api():
     reply = ask_gf(user_id, message)
     return jsonify({"reply": reply})
 
-# Telegram webhook (alag path pe rakha hai /tg/ prefix ke saath)
 @app.route('/tg/' + TOKEN, methods=['POST'])
 def telegram_webhook():
     json_str = request.get_data().decode('UTF-8')
@@ -151,12 +172,12 @@ def cmd_start(message):
     name = message.from_user.first_name or "tum"
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(telebot.types.InlineKeyboardButton(
-        "💕 Priya se baat karo",
+        "💕 Mishty se baat karo",
         web_app=telebot.types.WebAppInfo(url=WEBHOOK_URL)
     ))
     bot.send_message(
         message.chat.id,
-        f"Arre {name}! 😊 Aagaye aakhir...\n\nNeeche button dabao ya seedha yahan type karo! 💬",
+        f"Arre {name}! 😊 Finally aaye... kaafi time baad dikhe ho!\n\nNeeche button dabao ya yahan type karo! 💬",
         reply_markup=markup
     )
 
@@ -174,7 +195,7 @@ def cmd_reset(message):
     uid = str(message.from_user.id)
     if uid in user_histories:
         user_histories[uid] = []
-    bot.send_message(message.chat.id, "Chalo fresh start karte hain! 🌸")
+    bot.send_message(message.chat.id, "Chalo fresh start karte hain! lekin mai tumhe bhoolungi nahi 🌸")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -189,9 +210,9 @@ def handle_text(message):
 def handle_media(message):
     import random
     bot.send_message(message.chat.id, random.choice([
-        "Arrey... mujhe toh bas tumhari baatein chahiye 🥺",
-        "Ye kya bheja? Seedha baat karo na! 😄",
-        "Baat karo pehle, baaki sab baad mein 😊"
+        "Arre yaar... seedha baat karo na mujhse 🥺",
+        "Ye kya bheja? Bolo kuch! 😄",
+        "Ignore mat karo aise... baat karo pehle 😤"
     ]))
 
 
@@ -213,7 +234,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Webhook error: {e}")
     else:
-        print("WEBHOOK_URL not set!")
+        print("WEBHOOK_URL not set — set it in Render ENV!")
 
     port = int(os.environ.get('PORT', 5000))
     print(f"Running on port {port}")

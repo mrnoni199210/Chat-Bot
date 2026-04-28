@@ -15,6 +15,11 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 WEBHOOK_URL    = os.environ.get("WEBHOOK_URL")
 DATABASE_URL   = os.environ.get("DATABASE_URL")   # Supabase connection string
 
+# ─────────────────────────────────────────
+# WHITELIST — sirf ye IDs access kar sakte hain
+# ─────────────────────────────────────────
+ALLOWED_IDS = {"1356760732"}
+
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__, static_folder='static')
 
@@ -392,6 +397,10 @@ def chat_api():
     message = data.get('message', '').strip()
     if not message:
         return jsonify({"error": "Empty message"}), 400
+    # Webapp access check
+    if str(user_id) not in ALLOWED_IDS and user_id != "webapp_user":
+        return jsonify({"reply": "Access nahi hai 🚫"}), 403
+
     reply = ask_gf(user_id, message)
     return jsonify({"reply": reply})
 
@@ -455,6 +464,9 @@ def cmd_reset(message):
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
+    if str(message.from_user.id) not in ALLOWED_IDS:
+        bot.send_message(message.chat.id, "Access nahi hai 🚫")
+        return
     bot.send_chat_action(message.chat.id, 'typing')
     reply = ask_gf(str(message.from_user.id), message.text.strip())
     try:
@@ -464,6 +476,9 @@ def handle_text(message):
 
 @bot.message_handler(content_types=['photo', 'voice', 'video', 'sticker', 'document'])
 def handle_media(message):
+    if str(message.from_user.id) not in ALLOWED_IDS:
+        bot.send_message(message.chat.id, "Access nahi hai 🚫")
+        return
     import random
     bot.send_message(message.chat.id, random.choice([
         "Arre yaar... seedha baat karo na 🥺",

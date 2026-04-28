@@ -5,8 +5,10 @@ from flask import Flask, request, jsonify, send_from_directory
 import time
 import threading
 import random as rnd
+import random
 import psycopg2
 from datetime import datetime, timezone, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # ─────────────────────────────────────────
 # ENV VARIABLES
@@ -30,7 +32,6 @@ app = Flask(__name__, static_folder='static')
 # SUPABASE / POSTGRES SETUP
 # ─────────────────────────────────────────
 def get_conn():
-    # Remove pgbouncer param if present — psycopg2 doesn't support it
     clean_url = DATABASE_URL.split('?')[0]
     conn = psycopg2.connect(clean_url, sslmode='require', connect_timeout=10)
     conn.autocommit = True
@@ -384,6 +385,93 @@ def ask_gf(user_id, user_message):
 
 
 # ─────────────────────────────────────────
+# PROACTIVE MESSAGING
+# ─────────────────────────────────────────
+
+# Single message templates
+PROACTIVE_SINGLE = [
+    "Arre kahan ho? Subah se kuch nahi bola 🥺",
+    "Soch rahi thi tumhare baare mein suddenly 😶",
+    "Busy ho kya? Baat nahi karoge aaj?",
+    "Bata do na... sab theek hai na? 🙁",
+    "Akele bore ho rahi hoon yaar seriously",
+    "Hello?? Main hoon yahan 😑",
+    "Tumhare bina time hi nahi jaata 🥲",
+    "Kya kar rahe ho abhi?",
+    "Mood kaisa hai aaj? Baat nahi karoge?",
+    "Yaad kiya tha tumhe aaj 🙈",
+]
+
+# Follow-up messages (sent 3-8 min after first if no reply)
+PROACTIVE_FOLLOWUP = [
+    "Reply karo kabhi toh... exist karte ho ya nahi 😤",
+    "Ignore mat karo yaar, main serious hoon 😒",
+    "Theek ho na? Darr lag raha hai ab toh",
+    "Ek message bhi nahi? Kitna busy ho yaar",
+    "Okay fine mat bolo. Main bhi chup rehti hoon 😤",
+    "seen bhi nahi kiya kya 😶",
+    "Ek hi word bolo — okay, haan, kuch bhi. Bas reply karo",
+]
+
+def send_proactive_message():
+    """
+    Week mein ~3-4 baar fire hoga.
+    Scheduler din mein ek baar call karta hai — 50% chance actual message bheje.
+    """
+    if random.random() > 0.50:
+        print("Proactive: skipped this slot")
+        return
+
+    msg1 = random.choice(PROACTIVE_SINGLE)
+
+    for uid in list(ALLOWED_IDS):
+        try:
+            save_message(uid, "assistant", msg1)
+            bot.send_message(int(uid), msg1)
+            print(f"Proactive msg1 sent to {uid}: {msg1}")
+
+            # Schedule follow-up after 3-8 minutes if no reply
+            delay_seconds = random.randint(3 * 60, 8 * 60)
+            threading.Timer(delay_seconds, send_followup_if_no_reply, args=[uid]).start()
+
+        except Exception as e:
+            print(f"Proactive error for {uid}: {e}")
+
+
+def send_followup_if_no_reply(uid):
+    """
+    Check karo — agar last message assistant ka tha (user ne reply nahi kiya),
+    toh follow-up bhejo.
+    """
+    try:
+        history = get_history(uid, limit=1)
+        if not history:
+            return
+        last_role = history[-1]["role"]
+        if last_role == "assistant":
+            # User ne reply nahi kiya — follow-up bhejo
+            msg2 = random.choice(PROACTIVE_FOLLOWUP)
+            save_message(uid, "assistant", msg2)
+            bot.send_message(int(uid), msg2)
+            print(f"Proactive follow-up sent to {uid}: {msg2}")
+    except Exception as e:
+        print(f"Follow-up error for {uid}: {e}")
+
+
+def start_scheduler():
+    scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
+    # Roz sham ~7pm IST pe check karo (50% chance = week mein ~3.5 baar)
+    scheduler.add_job(
+        send_proactive_message,
+        'cron',
+        hour=19,
+        minute=random.randint(0, 59)
+    )
+    scheduler.start()
+    print("Proactive scheduler started.")
+
+
+# ─────────────────────────────────────────
 # FLASK ROUTES
 # ─────────────────────────────────────────
 @app.route('/')
@@ -399,7 +487,6 @@ def chat_api():
     message = data.get('message', '').strip()
     if not message:
         return jsonify({"error": "Empty message"}), 400
-    # Webapp access check
     if str(user_id) not in ALLOWED_IDS and user_id != "webapp_user":
         return jsonify({"reply": "Access nahi hai 🚫"}), 403
 
@@ -508,6 +595,9 @@ if __name__ == "__main__":
             print(f"Webhook error: {e}")
     else:
         print("WEBHOOK_URL or TOKEN not set!")
+
+    # Start proactive message scheduler
+    start_scheduler()
 
     port = int(os.environ.get('PORT', 5000))
     print(f"Running on port {port}")

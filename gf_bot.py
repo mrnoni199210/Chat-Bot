@@ -23,7 +23,9 @@ app = Flask(__name__, static_folder='static')
 # SUPABASE / POSTGRES SETUP
 # ─────────────────────────────────────────
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
+    # Remove pgbouncer param if present — psycopg2 doesn't support it
+    clean_url = DATABASE_URL.split('?')[0]
+    conn = psycopg2.connect(clean_url, sslmode='require', connect_timeout=10)
     conn.autocommit = True
     return conn
 

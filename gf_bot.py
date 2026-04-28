@@ -23,7 +23,9 @@ app = Flask(__name__, static_folder='static')
 # SUPABASE / POSTGRES SETUP
 # ─────────────────────────────────────────
 def get_conn():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require', connect_timeout=10)
+    conn.autocommit = True
+    return conn
 
 def init_db():
     conn = get_conn()

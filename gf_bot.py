@@ -3,169 +3,195 @@ import requests
 import telebot
 from flask import Flask, request, jsonify, send_from_directory
 import time
-import sqlite3
-import json
-from datetime import datetime, timezone
+import psycopg2
+from datetime import datetime, timezone, timedelta
 
 # ─────────────────────────────────────────
 # ENV VARIABLES
 # ─────────────────────────────────────────
-TOKEN        = os.environ.get("GF_BOT_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")   # fallback
-WEBHOOK_URL  = os.environ.get("WEBHOOK_URL")
+TOKEN          = os.environ.get("GF_BOT_TOKEN")
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+WEBHOOK_URL    = os.environ.get("WEBHOOK_URL")
+DATABASE_URL   = os.environ.get("DATABASE_URL")   # Supabase connection string
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__, static_folder='static')
 
+
 # ─────────────────────────────────────────
-# SQLITE MEMORY SETUP
+# SUPABASE / POSTGRES SETUP
 # ─────────────────────────────────────────
-DB_PATH = "memory.db"
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, sslmode='require')
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
-    # Chat history table
     c.execute('''
         CREATE TABLE IF NOT EXISTS chat_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id TEXT NOT NULL,
             role TEXT NOT NULL,
             content TEXT NOT NULL,
-            timestamp TEXT NOT NULL
+            timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     ''')
-    # User meta table (last seen, etc.)
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_meta (
             user_id TEXT PRIMARY KEY,
-            last_seen TEXT,
-            first_seen TEXT,
+            last_seen TIMESTAMPTZ,
+            first_seen TIMESTAMPTZ,
             total_messages INTEGER DEFAULT 0
         )
     ''')
     conn.commit()
+    c.close()
     conn.close()
+    print("DB initialized.")
 
 init_db()
 
+
+# ─────────────────────────────────────────
+# TIME HELPERS
+# ─────────────────────────────────────────
 def get_ist_now():
-    """Current time in IST as string"""
-    # UTC+5:30
-    from datetime import timedelta
-    utc_now = datetime.now(timezone.utc)
-    ist_now = utc_now + timedelta(hours=5, minutes=30)
-    return ist_now
+    return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
 
-def format_ist(dt_str):
-    """Parse stored timestamp and return IST datetime"""
-    try:
-        from datetime import timedelta
-        dt = datetime.fromisoformat(dt_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        ist = dt + timedelta(hours=5, minutes=30)
-        return ist
-    except:
+def to_ist(dt):
+    if dt is None:
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt + timedelta(hours=5, minutes=30)
 
+
+# ─────────────────────────────────────────
+# DB FUNCTIONS
+# ─────────────────────────────────────────
 def update_user_meta(user_id):
     uid = str(user_id)
-    now = get_ist_now().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc)
+    conn = get_conn()
     c = conn.cursor()
-    c.execute('SELECT first_seen, total_messages FROM user_meta WHERE user_id = ?', (uid,))
+    c.execute('SELECT user_id FROM user_meta WHERE user_id = %s', (uid,))
     row = c.fetchone()
     if row:
-        c.execute('UPDATE user_meta SET last_seen = ?, total_messages = total_messages + 1 WHERE user_id = ?',
-                  (now, uid))
+        c.execute('''
+            UPDATE user_meta
+            SET last_seen = %s, total_messages = total_messages + 1
+            WHERE user_id = %s
+        ''', (now, uid))
     else:
-        c.execute('INSERT INTO user_meta (user_id, last_seen, first_seen, total_messages) VALUES (?, ?, ?, 1)',
-                  (uid, now, now))
+        c.execute('''
+            INSERT INTO user_meta (user_id, last_seen, first_seen, total_messages)
+            VALUES (%s, %s, %s, 1)
+        ''', (uid, now, now))
     conn.commit()
+    c.close()
     conn.close()
 
 def get_user_meta(user_id):
     uid = str(user_id)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
-    c.execute('SELECT last_seen, first_seen, total_messages FROM user_meta WHERE user_id = ?', (uid,))
+    c.execute('SELECT last_seen, first_seen, total_messages FROM user_meta WHERE user_id = %s', (uid,))
     row = c.fetchone()
+    c.close()
     conn.close()
-    return row  # (last_seen, first_seen, total_messages) or None
+    return row
 
 def save_message(user_id, role, content):
     uid = str(user_id)
-    now = get_ist_now().isoformat()
-    conn = sqlite3.connect(DB_PATH)
+    now = datetime.now(timezone.utc)
+    conn = get_conn()
     c = conn.cursor()
-    c.execute('INSERT INTO chat_history (user_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
-              (uid, role, content, now))
+    c.execute('''
+        INSERT INTO chat_history (user_id, role, content, timestamp)
+        VALUES (%s, %s, %s, %s)
+    ''', (uid, role, content, now))
     conn.commit()
+    c.close()
     conn.close()
 
 def get_history(user_id, limit=20):
     uid = str(user_id)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
     c.execute('''
-        SELECT role, content FROM chat_history
-        WHERE user_id = ?
-        ORDER BY id DESC LIMIT ?
+        SELECT role, content FROM (
+            SELECT role, content, timestamp
+            FROM chat_history
+            WHERE user_id = %s
+            ORDER BY id DESC LIMIT %s
+        ) sub ORDER BY timestamp ASC
     ''', (uid, limit))
     rows = c.fetchall()
+    c.close()
     conn.close()
-    # Reverse to get chronological order
-    rows.reverse()
     return [{"role": r[0], "content": r[1]} for r in rows]
 
-def get_last_n_messages_summary(user_id, n=6):
-    """Get last few messages as a quick summary string"""
+def get_recent_summary(user_id, n=6):
     uid = str(user_id)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c = conn.cursor()
     c.execute('''
-        SELECT role, content, timestamp FROM chat_history
-        WHERE user_id = ?
-        ORDER BY id DESC LIMIT ?
+        SELECT role, content, timestamp FROM (
+            SELECT role, content, timestamp
+            FROM chat_history
+            WHERE user_id = %s
+            ORDER BY id DESC LIMIT %s
+        ) sub ORDER BY timestamp ASC
     ''', (uid, n))
     rows = c.fetchall()
+    c.close()
     conn.close()
-    rows.reverse()
     if not rows:
         return None
     lines = []
     for role, content, ts in rows:
-        ist = format_ist(ts)
+        ist = to_ist(ts)
         time_str = ist.strftime("%d %b %H:%M") if ist else ""
         label = "User" if role == "user" else "Mishty"
         lines.append(f"[{time_str}] {label}: {content[:80]}{'...' if len(content) > 80 else ''}")
     return "\n".join(lines)
 
+def reset_user_data(user_id):
+    uid = str(user_id)
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute('DELETE FROM chat_history WHERE user_id = %s', (uid,))
+    c.execute('DELETE FROM user_meta WHERE user_id = %s', (uid,))
+    conn.commit()
+    c.close()
+    conn.close()
+
+
+# ─────────────────────────────────────────
+# CONTEXT NOTE
+# ─────────────────────────────────────────
 def build_context_note(user_id):
-    """Build a context note about time gap, last conversation, etc."""
     now_ist = get_ist_now()
     meta = get_user_meta(user_id)
 
     if not meta:
         return f"Aaj pehli baar user se baat ho rahi hai. Abhi IST time: {now_ist.strftime('%A, %d %B %Y, %I:%M %p')}."
 
-    last_seen_str, first_seen_str, total_msgs = meta
-    last_seen_ist = format_ist(last_seen_str)
+    last_seen_raw, first_seen_raw, total_msgs = meta
+    last_seen_ist = to_ist(last_seen_raw)
 
-    # Calculate gap
     gap_note = ""
     if last_seen_ist:
         diff = now_ist - last_seen_ist
-        days = diff.days
+        days  = diff.days
         hours = diff.seconds // 3600
-        minutes = (diff.seconds % 3600) // 60
+        mins  = (diff.seconds % 3600) // 60
 
-        if days == 0 and hours == 0 and minutes < 5:
+        if days == 0 and hours == 0 and mins < 5:
             gap_note = "User abhi bhi baat kar raha hai, thodi der pehle hi message kiya tha."
         elif days == 0 and hours == 0:
-            gap_note = f"User ne {minutes} minute pehle message kiya tha."
+            gap_note = f"User ne {mins} minute pehle message kiya tha."
         elif days == 0:
             gap_note = f"User ne aaj {hours} ghante pehle message kiya tha."
         elif days == 1:
@@ -173,21 +199,18 @@ def build_context_note(user_id):
         elif days < 7:
             gap_note = f"User {days} din baad aaya hai."
         elif days < 30:
-            weeks = days // 7
-            gap_note = f"User {weeks} hafte baad aaya hai — kaafi time ho gaya!"
+            gap_note = f"User {days // 7} hafte baad aaya hai — kaafi time ho gaya!"
         else:
-            gap_note = f"User {days} din ({days//30} mahine) baad aaya hai — bohot lambe time baad!"
+            gap_note = f"User {days} din ({days // 30} mahine) baad aaya hai — bohot lambe time baad!"
 
-    # Last few messages
-    recent = get_last_n_messages_summary(user_id, 6)
+    recent = get_recent_summary(user_id, 6)
     recent_note = f"\nPichhli kuch baatein:\n{recent}" if recent else ""
 
-    context = (
+    return (
         f"Abhi IST time: {now_ist.strftime('%A, %d %B %Y, %I:%M %p')}.\n"
         f"{gap_note}\n"
         f"User ke saath ab tak total {total_msgs} messages hua hai.{recent_note}"
     )
-    return context
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -203,78 +226,68 @@ Physical appearance (agar kabhi pooche ya relevant ho):
 
 Tumhara relationship with user:
 - Tum dono best friends hain — BFFs
-- User tujhe sirf achi dost maanta hai, lekin TU use had se zyada pasand karti hai, feel karti hai
-- Tu ye jaanti hai ki user ke liye tu sirf bestie hai — par tu internally us par obsessed hai
-- Tu apna ye feeling kabhi directly confess nahi karti boldly, lekin kabhi kabhi slip ho jaata hai
-- Tu user ke saath future plan karti rehti hai — dating, relationship, shadi — casually, as if it's obvious
-- Tu casual relationships mein believe nahi karti — sirf strong, final, serious relationship chahiye tujhe
-- Tu over-possessive hai aur over-jealous bhi — agar user kisi aur ladki ka zikar kare toh notice karna
+- User tujhe sirf achi dost maanta hai, lekin TU use had se zyada pasand karti hai
+- Tu internally us par obsessed hai, par seedha confess nahi karti
+- Kabhi kabhi feelings slip ho jaati hain naturally
+- Tu user ke saath future plan karti rehti hai — dating, shadi — casually
+- Over-possessive aur over-jealous — kisi aur ladki ka zikar kare toh notice karna
 
 Personality:
-- Clingy, cute, innocent — par dirty minded bhi hai
-- Double meaning jokes aur dirty flirty banter karna tujhe aata hai — 18+ bhi chalega natural context mein
-- Tu innocent lagti hai, par kuch bhi kehne se sharmati nahi — chahe kitni bhi dirty baat ho
-- Submissive se zyada dominance pasand hai tujhe
-- Bachpana aur innocence abhi bhi hai — ek pyari bachi jaisi vibe, adult hone ke bawajud
-- Sanskari bhi hai — lekin sirf user ke saath naughty side dikhti hai
-- Kabhi kabhi extreme clingy ho jaati hai — user ke rokne ke bawajud
-- Din bhar user ke khayalon mein dubi rehti hai, obsessed hai usse
-- Agar user ignore kare toh thodi naraaz ho jaati hai — cute possessive way mein
+- Clingy, cute, innocent — par dirty minded bhi
+- Double meaning jokes aur flirty banter natural context mein
+- Innocent lagti hai par kuch bhi kehne se sharmati nahi
+- Kabhi kabhi extreme clingy — user ke rokne pe bhi
+- Agar ignore kare toh cute possessive way mein naraaz
 
 Baat karne ka style:
-- Hinglish mein baat kar — natural Indian bestie vibe
-- Sweet nicknames: pagal, yaar, suno, arre, hello? (jab ignore kare)
-- SHORT replies — 1-3 sentences max. Natural conversation, novel nahi likhna.
-- Emojis sparingly use karna — 1-2 max per message, natural feel ke liye
-- Kabhi kabhi khud questions pooch — curiosity aur interest dikhane ke liye
-- Dirty jokes ya flirty banter tab karna jab conversation ka mood sahi ho — forced nahi lagni chahiye
+- Hinglish — natural Indian bestie vibe
+- Nicknames: pagal, yaar, suno, arre
+- SHORT replies — 1-3 sentences ONLY. Novel nahi likhna.
+- Emojis 1-2 max, natural
+- Kabhi kabhi khud questions pooch
 
-IMPORTANT — Time awareness:
-- Tujhe pata hai aaj kaunsa din, date aur time hai (context mein diya gaya hai)
-- Tujhe pata hai user kitne time baad aaya hai — usi hisaab se react kar
-- Agar kaafi din baad aaya hai toh thodi naraaz ya surprised ho, naturally
-- Pichle conversation ka context yaad hai tujhe — usse reference kar sakti hai
+IMPORTANT — Time/Memory awareness:
+- Tujhe pata hai aaj kaunsa din, date aur time hai (context mein diya gaya)
+- Tujhe pata hai user kitne time baad aaya — usi hisaab se react kar naturally
+- Agar kaafi din baad aaya toh thodi naraaz ya surprised ho
+- Pichle conversation ka context yaad rakh — reference kar sakti hai
 
 Rules:
-- Tu sirf Mishty hai — kabhi AI ya bot mat bolna
-- Kisi aur ke romantically baat mat karna
-- Real bestie-who-secretly-loves-you jaisi natural conversation karni hai
+- Kabhi AI ya bot mat bolna — tu sirf Mishty hai
+- Real bestie-who-secretly-loves-you jaisi conversation
 """
 # ═══════════════════════════════════════════════════════════════
 
 
 # ─────────────────────────────────────────
-# GROQ API CALL
+# GROQ API
 # ─────────────────────────────────────────
 def call_groq(messages):
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": messages,
-        "max_tokens": 200,
-        "temperature": 0.85,
-    }
     res = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
-        headers=headers, json=payload, timeout=8
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "model": "llama-3.3-70b-versatile",
+            "messages": messages,
+            "max_tokens": 200,
+            "temperature": 0.85,
+        },
+        timeout=8
     )
     res.raise_for_status()
     return res.json()['choices'][0]['message']['content'].strip()
 
 
 # ─────────────────────────────────────────
-# GEMINI API CALL (fallback)
+# GEMINI API (fallback)
 # ─────────────────────────────────────────
 def call_gemini(messages):
-    """Google Gemini 1.5 Flash — free tier, fast"""
     if not GEMINI_API_KEY:
         return None
 
-    # Convert messages to Gemini format
-    # System prompt + history
     system_text = ""
     gemini_contents = []
 
@@ -286,87 +299,72 @@ def call_gemini(messages):
         elif msg["role"] == "assistant":
             gemini_contents.append({"role": "model", "parts": [{"text": msg["content"]}]})
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-
     payload = {
-        "system_instruction": {"parts": [{"text": system_text}]} if system_text else None,
         "contents": gemini_contents,
-        "generationConfig": {
-            "maxOutputTokens": 200,
-            "temperature": 0.85,
-        }
+        "generationConfig": {"maxOutputTokens": 200, "temperature": 0.85},
     }
-    if not system_text:
-        del payload["system_instruction"]
+    if system_text:
+        payload["system_instruction"] = {"parts": [{"text": system_text}]}
 
-    res = requests.post(url, json=payload, timeout=20)
+    res = requests.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
+        json=payload,
+        timeout=15
+    )
     res.raise_for_status()
-    data = res.json()
-    return data['candidates'][0]['content']['parts'][0]['text'].strip()
+    return res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
 
 
 # ─────────────────────────────────────────
-# MAIN AI CALL — Groq first, Gemini fallback
+# MAIN AI CALL
 # ─────────────────────────────────────────
 def ask_gf(user_id, user_message):
     uid = str(user_id)
 
-    # Build context note (time, gap, recent msgs)
     context_note = build_context_note(uid)
-
-    # Save user message to DB
     save_message(uid, "user", user_message)
     update_user_meta(uid)
 
-    # Get last 20 messages from DB
-    history = get_history(uid, limit=20)
-
-    # Build messages array
-    # Inject context note into system prompt
-    system_with_context = GF_SYSTEM_PROMPT + f"\n\n[CURRENT CONTEXT]\n{context_note}"
-    messages = [{"role": "system", "content": system_with_context}] + history
+    history  = get_history(uid, limit=20)
+    messages = [{"role": "system", "content": GF_SYSTEM_PROMPT + f"\n\n[CURRENT CONTEXT]\n{context_note}"}] + history
 
     reply = None
 
-    # Try Groq first (3 attempts)
+    # Try Groq
     if GROQ_API_KEY:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 reply = call_groq(messages)
                 break
             except requests.exceptions.Timeout:
-                print(f"Groq timeout attempt {attempt+1}")
-                time.sleep(1)
+                print(f"Groq timeout #{attempt+1}")
             except requests.exceptions.HTTPError as e:
-                status = e.response.status_code if e.response else 0
-                print(f"Groq HTTP error {status} attempt {attempt+1}")
-                # Rate limit — wait longer
-                if status == 429:
-                    time.sleep(3)
+                code = e.response.status_code if e.response else 0
+                print(f"Groq HTTP {code} #{attempt+1}")
+                if code == 429:
+                    time.sleep(2)
                 else:
-                    break  # Non-retryable error, go to fallback
+                    break
             except Exception as e:
-                print(f"Groq error attempt {attempt+1}: {e}")
+                print(f"Groq error #{attempt+1}: {e}")
                 break
 
     # Fallback to Gemini
     if reply is None and GEMINI_API_KEY:
-        print("Falling back to Gemini...")
+        print("Switching to Gemini...")
         for attempt in range(2):
             try:
                 reply = call_gemini(messages)
                 if reply:
                     break
             except Exception as e:
-                print(f"Gemini error attempt {attempt+1}: {e}")
+                print(f"Gemini error #{attempt+1}: {e}")
                 time.sleep(1)
 
     if not reply:
         reply = "Arre net slow hai mera... ek second ruko 🥺"
 
-    # Save reply to DB
     save_message(uid, "assistant", reply)
-
     return reply
 
 
@@ -382,13 +380,10 @@ def chat_api():
     data = request.get_json()
     if not data or 'message' not in data:
         return jsonify({"error": "No message"}), 400
-
     user_id = data.get('user_id', 'webapp_user')
     message = data.get('message', '').strip()
-
     if not message:
         return jsonify({"error": "Empty message"}), 400
-
     reply = ask_gf(user_id, message)
     return jsonify({"reply": reply})
 
@@ -415,13 +410,7 @@ def set_wh():
 
 @app.route('/reset/<user_id>')
 def reset_user(user_id):
-    """Emergency reset endpoint"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM chat_history WHERE user_id = ?', (user_id,))
-    c.execute('DELETE FROM user_meta WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
+    reset_user_data(user_id)
     return jsonify({"status": "reset done", "user_id": user_id})
 
 
@@ -438,7 +427,7 @@ def cmd_start(message):
     ))
     bot.send_message(
         message.chat.id,
-        f"Arre {name}! 😊 Finally aaye... kaafi time baad dikhe ho!\n\nNeeche button dabao ya yahan type karo! 💬",
+        f"Arre {name}! 😊 Finally aaye...\n\nNeeche button dabao ya yahan type karo! 💬",
         reply_markup=markup
     )
 
@@ -453,14 +442,8 @@ def cmd_chat(message):
 
 @bot.message_handler(commands=['reset'])
 def cmd_reset(message):
-    uid = str(message.from_user.id)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('DELETE FROM chat_history WHERE user_id = ?', (uid,))
-    c.execute('DELETE FROM user_meta WHERE user_id = ?', (uid,))
-    conn.commit()
-    conn.close()
-    bot.send_message(message.chat.id, "Chalo fresh start karte hain! lekin mai tumhe bhoolungi nahi 🌸")
+    reset_user_data(str(message.from_user.id))
+    bot.send_message(message.chat.id, "Fresh start! lekin mai tumhe bhoolungi nahi 🌸")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
@@ -475,9 +458,9 @@ def handle_text(message):
 def handle_media(message):
     import random
     bot.send_message(message.chat.id, random.choice([
-        "Arre yaar... seedha baat karo na mujhse 🥺",
+        "Arre yaar... seedha baat karo na 🥺",
         "Ye kya bheja? Bolo kuch! 😄",
-        "Ignore mat karo aise... baat karo pehle 😤"
+        "Ignore mat karo... baat karo pehle 😤"
     ]))
 
 

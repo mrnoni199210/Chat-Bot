@@ -335,11 +335,15 @@ Rules:
 # ─────────────────────────────────────────
 def describe_image_with_gemini(image_bytes, mime_type="image/jpeg", user_id=None, media_label="image"):
     """Gemini Vision se image/sticker identify karo aur Mishty-style react karo."""
+    # DEBUG: entry point
+    print(f"[GEMINI] describe_image called | bytes={len(image_bytes) if image_bytes else 'NONE'} | label={media_label}")
+
     if not GEMINI_API_KEY:
-        print("Gemini Vision: GEMINI_API_KEY not set, using fallback.")
+        print("[GEMINI] ERROR: GEMINI_API_KEY not set!")
         return _image_fallback_reply(user_id, media_label)
 
     b64 = base64.b64encode(image_bytes).decode("utf-8")
+    print(f"[GEMINI] b64 encoded, size={len(b64)} chars")
 
     vision_prompt = (
         "Tu Mishty hai — 21 saal ki Indian ladki, user ki best friend jo use secretly pasand karti hai. "
@@ -354,7 +358,6 @@ def describe_image_with_gemini(image_bytes, mime_type="image/jpeg", user_id=None
         "- Bot ya AI jaisi language nahi — real bestie ki tarah bolo"
     )
 
-    # Gemini Vision ke liye: image pehle, phir text (better results)
     payload = {
         "contents": [{
             "parts": [
@@ -374,32 +377,35 @@ def describe_image_with_gemini(image_bytes, mime_type="image/jpeg", user_id=None
         }
     }
 
-    # Try gemini-2.0-flash first, fallback to gemini-1.5-flash
     for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
+            print(f"[GEMINI] Trying model: {model}")
             res = requests.post(
                 f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
                 json=payload,
-                timeout=20
+                timeout=40  # increased from 20
             )
+            print(f"[GEMINI] {model} HTTP status: {res.status_code}")
             if res.status_code == 200:
                 data = res.json()
                 text = data.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '').strip()
                 if text:
-                    print(f"Gemini Vision OK ({model}): {text[:60]}...")
+                    print(f"[GEMINI] SUCCESS ({model}): {text[:80]}")
                     if user_id:
                         save_message(str(user_id), "user", f"[{media_label} bheja]")
                         save_message(str(user_id), "assistant", text)
                         update_user_meta(str(user_id))
                     return text
+                else:
+                    print(f"[GEMINI] {model} returned empty text. Full response: {data}")
             else:
-                print(f"Gemini Vision {model} HTTP {res.status_code}: {res.text[:200]}")
+                print(f"[GEMINI] {model} HTTP {res.status_code}: {res.text[:300]}")
         except requests.exceptions.Timeout:
-            print(f"Gemini Vision {model} timeout")
+            print(f"[GEMINI] {model} TIMEOUT (40s exceeded)")
         except Exception as e:
-            print(f"Gemini Vision {model} error: {e}")
+            print(f"[GEMINI] {model} EXCEPTION: {e}")
 
-    # Both models fail — use context-aware fallback
+    print("[GEMINI] All models failed, using fallback")
     return _image_fallback_reply(user_id, media_label)
 
 
@@ -424,28 +430,46 @@ def _image_fallback_reply(user_id, media_label="image"):
 
 def get_sticker_as_png(file_id):
     """Telegram sticker (WebP) download karo."""
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        res = requests.get(file_url, timeout=10)
-        res.raise_for_status()
-        return res.content, "image/webp"
-    except Exception as e:
-        print(f"Sticker download error: {e}")
-        return None, None
+    print(f"[STICKER] Downloading file_id: {file_id}")
+    for attempt in range(3):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            print(f"[STICKER] URL: {file_url[:80]} | attempt {attempt+1}")
+            res = requests.get(file_url, timeout=30)
+            res.raise_for_status()
+            print(f"[STICKER] Downloaded {len(res.content)} bytes")
+            if len(res.content) > 100:
+                return res.content, "image/webp"
+            else:
+                print(f"[STICKER] Too small ({len(res.content)} bytes), retrying")
+        except Exception as e:
+            print(f"[STICKER] attempt {attempt+1} FAILED: {e}")
+            time.sleep(1)
+    print("[STICKER] All attempts failed")
+    return None, None
 
 
 def get_photo_bytes(file_id):
     """Telegram photo download karo."""
-    try:
-        file_info = bot.get_file(file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        res = requests.get(file_url, timeout=10)
-        res.raise_for_status()
-        return res.content, "image/jpeg"
-    except Exception as e:
-        print(f"Photo download error: {e}")
-        return None, None
+    print(f"[PHOTO] Downloading file_id: {file_id}")
+    for attempt in range(3):
+        try:
+            file_info = bot.get_file(file_id)
+            file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+            print(f"[PHOTO] URL: {file_url[:80]} | attempt {attempt+1}")
+            res = requests.get(file_url, timeout=30)
+            res.raise_for_status()
+            print(f"[PHOTO] Downloaded {len(res.content)} bytes")
+            if len(res.content) > 100:
+                return res.content, "image/jpeg"
+            else:
+                print(f"[PHOTO] Too small ({len(res.content)} bytes), retrying")
+        except Exception as e:
+            print(f"[PHOTO] attempt {attempt+1} FAILED: {e}")
+            time.sleep(1)
+    print("[PHOTO] All attempts failed")
+    return None, None
 
 
 # ─────────────────────────────────────────
@@ -550,7 +574,6 @@ def ask_gf(user_id, user_message):
                 print(f"Gemini error #{attempt+1}: {e}")
                 time.sleep(1)
 
-    # API fail — koi reply nahi bhejenge, None return
     if not reply:
         return None
 
@@ -653,7 +676,6 @@ def chat_api():
 
     reply = ask_gf(user_id, message)
     if reply is None:
-        # API fail — empty 200 response, frontend handle karega
         return jsonify({"reply": None}), 200
     return jsonify({"reply": reply})
 
@@ -723,7 +745,7 @@ def handle_text(message):
     bot.send_chat_action(message.chat.id, 'typing')
     reply = ask_gf(str(message.from_user.id), message.text.strip())
     if reply is None:
-        return  # API fail — koi reply nahi
+        return
     try:
         bot.send_message(message.chat.id, reply)
     except Exception:
@@ -739,11 +761,13 @@ def handle_photo(message):
     uid = str(message.from_user.id)
 
     photo = message.photo[-1]
+    print(f"[HANDLER] Photo received, file_id={photo.file_id}")
     image_bytes, mime_type = get_photo_bytes(photo.file_id)
 
     if image_bytes:
         reply = describe_image_with_gemini(image_bytes, mime_type, user_id=uid, media_label="photo")
     else:
+        print("[HANDLER] Photo download failed, using fallback")
         reply = _image_fallback_reply(uid, "photo")
 
     if not reply:
@@ -764,11 +788,13 @@ def handle_sticker(message):
     uid = str(message.from_user.id)
 
     sticker = message.sticker
+    print(f"[HANDLER] Sticker received, file_id={sticker.file_id}")
     image_bytes, mime_type = get_sticker_as_png(sticker.file_id)
 
     if image_bytes:
         reply = describe_image_with_gemini(image_bytes, mime_type, user_id=uid, media_label="sticker")
     else:
+        print("[HANDLER] Sticker download failed, using fallback")
         reply = _image_fallback_reply(uid, "sticker")
 
     if not reply:
@@ -785,7 +811,6 @@ def handle_other_media(message):
     if str(message.from_user.id) not in ALLOWED_IDS:
         bot.send_message(message.chat.id, "Access nahi hai")
         return
-    # Voice/video/doc — text prompt bhejo AI ko
     uid = str(message.from_user.id)
     media_type = message.content_type
     pseudo_msg = f"[User ne {media_type} bheja]"

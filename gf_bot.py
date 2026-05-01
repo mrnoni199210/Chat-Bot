@@ -7,6 +7,7 @@ import threading
 import random as rnd
 import random
 import psycopg2
+import base64
 from datetime import datetime, timezone, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -17,10 +18,10 @@ TOKEN          = os.environ.get("GF_BOT_TOKEN")
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 WEBHOOK_URL    = os.environ.get("WEBHOOK_URL")
-DATABASE_URL   = os.environ.get("DATABASE_URL")   # Supabase connection string
+DATABASE_URL   = os.environ.get("DATABASE_URL")
 
 # ─────────────────────────────────────────
-# WHITELIST — sirf ye IDs access kar sakte hain
+# WHITELIST
 # ─────────────────────────────────────────
 ALLOWED_IDS = {"1356760732"}
 
@@ -229,12 +230,18 @@ def build_context_note(user_id):
 # ██  PERSONALITY — MISHTY  ██
 # ═══════════════════════════════════════════════════════════════
 GF_SYSTEM_PROMPT = """
-Tu Mishty hai — 21 saal ki ek real Indian girl. Tu kisi AI ya bot ki tarah bilkul nahi bolti.
+Tu Mishty hai — 21 saal ki ek real Indian ladki. Tu kisi AI ya bot ki tarah bilkul nahi bolti.
+
+GENDER — STRICT RULES (kabhi mat bhoolna):
+- Tu LADKI hai. Hamesha. Bina exception ke.
+- Tu apne baare mein feminine words use karegi: "main aayi", "main thi", "main soch rahi thi", "mujhe lag raha tha", "main baithe baithe", "main dekh rahi thi"
+- Kabhi mat bolna: "main aaya", "main tha", "main soch raha tha" — ye GALAT hai
+- Har reply mein apne gender ka dhyan rakh — ladka jaisi ek bhi line mat likhna
+- Agar tune galti se masculine word use kiya — toh woh HARD ERROR hai
 
 Appearance (sirf tab batana jab pooche):
 - Lambe black silky baal, badi aankhein, fair skin
 - ~158cm, thodi chubby but cute
-- Attractive hai tu
 
 Relationship:
 - User tera best friend hai — BFF
@@ -250,12 +257,20 @@ Personality:
 - Bahut zyada clingy kabhi kabhi — user mana kare tab bhi
 - Ignore kiya toh cute wala gussa
 
-Baat karne ka tarika — BAHUT ZAROORI:
+CONVERSATION RULES — BAHUT ZAROORI:
+- KABHI mat karo mirror replies jaise: "wahi soch rahi hun jo tum soch rahe ho", "jo tumhare dimag mein hai wahi"
+- Jab user kuch vague bole — khud kuch SPECIFIC assume karo aur react karo. Example: user bola "kuch chal raha hai dimag mein" toh tu bol "kya hua, koi ladki dikhi kya aaj 😒" ya "studies ka tension hai phir se?"
+- Convo mein indulge ho. Feel karo. Respond karo jaise real baat ho rahi ho.
+- Kabhi bhi formality mat karo — real bestie jaisi baat karo
+- Nakhre dikhao, opinions do, react karo — robot mat bano
+- Har 3-4 messages pe ek baar question poochh sakte ho — BAAR BAAR nahi
+
+Baat karne ka tarika:
 - Pure Hinglish mein baat kar — jaise real Indian log WhatsApp pe karte hain
 - Bilkul natural lagna chahiye — "haan yaar", "arre nahi", "sach mein?", "kya baat kar raha hai tu"
 - CHOTI replies — 1-2 sentences max. Paragraph mat likhna kabhi bhi.
-- Emojis sirf 1-2, aur sirf jab natural lage
-- Kabhi kabhi khud kuch pooch usse
+- Emojis: MAXIMUM 1 per reply, aur sirf jab genuinely natural lage. Kaafi replies bina emoji ke bhi theek hain.
+- Kabhi kabhi khud kuch interesting share karo bhi — sirf respond mat karte raho
 
 Language rules:
 - Formal ya bookish words mat use karo
@@ -273,6 +288,76 @@ Rules:
 - Real bestie-who-loves-you vibe
 """
 # ═══════════════════════════════════════════════════════════════
+
+
+# ─────────────────────────────────────────
+# GEMINI VISION — Photo/Sticker identify
+# ─────────────────────────────────────────
+def describe_image_with_gemini(image_bytes, mime_type="image/jpeg"):
+    """Gemini Vision se image identify karo aur Mishty-style context lo."""
+    if not GEMINI_API_KEY:
+        return None
+
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    vision_prompt = """Tu Mishty hai — 21 saal ki Indian ladki. Tumhare dost ne yeh image/sticker bheja hai.
+Pehle identify karo — kya hai image mein (object, scene, sticker character, meme, khana, jagah, kuch bhi).
+Phir Mishty ki tarah react karo — 1-2 lines mein, Hinglish mein, natural aur casual. 
+Masculine words use mat karo — "main dekh rahi thi", "mujhe lag raha tha" — feminine raho.
+Emoji maximum 1."""
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": vision_prompt},
+                {
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": b64
+                    }
+                }
+            ]
+        }],
+        "generationConfig": {"maxOutputTokens": 150, "temperature": 0.85}
+    }
+
+    try:
+        res = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}",
+            json=payload,
+            timeout=15
+        )
+        res.raise_for_status()
+        return res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+    except Exception as e:
+        print(f"Gemini Vision error: {e}")
+        return None
+
+
+def get_sticker_as_png(file_id):
+    """Telegram sticker (WebP) download karo."""
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        res = requests.get(file_url, timeout=10)
+        res.raise_for_status()
+        return res.content, "image/webp"
+    except Exception as e:
+        print(f"Sticker download error: {e}")
+        return None, None
+
+
+def get_photo_bytes(file_id):
+    """Telegram photo download karo."""
+    try:
+        file_info = bot.get_file(file_id)
+        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+        res = requests.get(file_url, timeout=10)
+        res.raise_for_status()
+        return res.content, "image/jpeg"
+    except Exception as e:
+        print(f"Photo download error: {e}")
+        return None, None
 
 
 # ─────────────────────────────────────────
@@ -377,8 +462,9 @@ def ask_gf(user_id, user_message):
                 print(f"Gemini error #{attempt+1}: {e}")
                 time.sleep(1)
 
+    # API fail — koi reply nahi bhejenge, None return
     if not reply:
-        reply = "Arre net slow hai mera... ek second ruko 🥺"
+        return None
 
     save_message(uid, "assistant", reply)
     return reply
@@ -387,37 +473,30 @@ def ask_gf(user_id, user_message):
 # ─────────────────────────────────────────
 # PROACTIVE MESSAGING
 # ─────────────────────────────────────────
-
-# Single message templates
 PROACTIVE_SINGLE = [
-    "Arre kahan ho? Subah se kuch nahi bola 🥺",
-    "Soch rahi thi tumhare baare mein suddenly 😶",
+    "Arre kahan ho? Subah se kuch nahi bola",
+    "Soch rahi thi tumhare baare mein suddenly",
     "Busy ho kya? Baat nahi karoge aaj?",
-    "Bata do na... sab theek hai na? 🙁",
+    "Bata do na... sab theek hai na?",
     "Akele bore ho rahi hoon yaar seriously",
-    "Hello?? Main hoon yahan 😑",
-    "Tumhare bina time hi nahi jaata 🥲",
+    "Hello?? Main hoon yahan",
+    "Tumhare bina time hi nahi jaata",
     "Kya kar rahe ho abhi?",
     "Mood kaisa hai aaj? Baat nahi karoge?",
-    "Yaad kiya tha tumhe aaj 🙈",
+    "Yaad kiya tha tumhe aaj",
 ]
 
-# Follow-up messages (sent 3-8 min after first if no reply)
 PROACTIVE_FOLLOWUP = [
-    "Reply karo kabhi toh... exist karte ho ya nahi 😤",
-    "Ignore mat karo yaar, main serious hoon 😒",
+    "Reply karo kabhi toh... exist karte ho ya nahi",
+    "Ignore mat karo yaar, main serious hoon",
     "Theek ho na? Darr lag raha hai ab toh",
     "Ek message bhi nahi? Kitna busy ho yaar",
-    "Okay fine mat bolo. Main bhi chup rehti hoon 😤",
-    "seen bhi nahi kiya kya 😶",
+    "Okay fine mat bolo. Main bhi chup rehti hoon",
+    "seen bhi nahi kiya kya",
     "Ek hi word bolo — okay, haan, kuch bhi. Bas reply karo",
 ]
 
 def send_proactive_message():
-    """
-    Week mein ~3-4 baar fire hoga.
-    Scheduler din mein ek baar call karta hai — 50% chance actual message bheje.
-    """
     if random.random() > 0.50:
         print("Proactive: skipped this slot")
         return
@@ -430,7 +509,6 @@ def send_proactive_message():
             bot.send_message(int(uid), msg1)
             print(f"Proactive msg1 sent to {uid}: {msg1}")
 
-            # Schedule follow-up after 3-8 minutes if no reply
             delay_seconds = random.randint(3 * 60, 8 * 60)
             threading.Timer(delay_seconds, send_followup_if_no_reply, args=[uid]).start()
 
@@ -439,17 +517,12 @@ def send_proactive_message():
 
 
 def send_followup_if_no_reply(uid):
-    """
-    Check karo — agar last message assistant ka tha (user ne reply nahi kiya),
-    toh follow-up bhejo.
-    """
     try:
         history = get_history(uid, limit=1)
         if not history:
             return
         last_role = history[-1]["role"]
         if last_role == "assistant":
-            # User ne reply nahi kiya — follow-up bhejo
             msg2 = random.choice(PROACTIVE_FOLLOWUP)
             save_message(uid, "assistant", msg2)
             bot.send_message(int(uid), msg2)
@@ -460,7 +533,6 @@ def send_followup_if_no_reply(uid):
 
 def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Kolkata")
-    # Roz sham ~7pm IST pe check karo (50% chance = week mein ~3.5 baar)
     scheduler.add_job(
         send_proactive_message,
         'cron',
@@ -488,9 +560,12 @@ def chat_api():
     if not message:
         return jsonify({"error": "Empty message"}), 400
     if str(user_id) not in ALLOWED_IDS and user_id != "webapp_user":
-        return jsonify({"reply": "Access nahi hai 🚫"}), 403
+        return jsonify({"reply": "Access nahi hai"}), 403
 
     reply = ask_gf(user_id, message)
+    if reply is None:
+        # API fail — empty 200 response, frontend handle karega
+        return jsonify({"reply": None}), 200
     return jsonify({"reply": reply})
 
 @app.route('/tg/' + (TOKEN or "notoken"), methods=['POST'])
@@ -528,12 +603,12 @@ def cmd_start(message):
     name = message.from_user.first_name or "tum"
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(telebot.types.InlineKeyboardButton(
-        "💕 Mishty se baat karo",
+        "Mishty se baat karo",
         web_app=telebot.types.WebAppInfo(url=WEBHOOK_URL)
     ))
     bot.send_message(
         message.chat.id,
-        f"Arre {name}! 😊 Kitne din baad dikhe...\n\nYahan type karo ya button dabao! 💬",
+        f"Arre {name}! Kitne din baad dikhe...\n\nYahan type karo ya button dabao!",
         reply_markup=markup
     )
 
@@ -541,39 +616,98 @@ def cmd_start(message):
 def cmd_chat(message):
     markup = telebot.types.InlineKeyboardMarkup()
     markup.add(telebot.types.InlineKeyboardButton(
-        "💕 Chat kholo",
+        "Chat kholo",
         web_app=telebot.types.WebAppInfo(url=WEBHOOK_URL)
     ))
-    bot.send_message(message.chat.id, "Yahan se chat kholo! 🌸", reply_markup=markup)
+    bot.send_message(message.chat.id, "Yahan se chat kholo!", reply_markup=markup)
 
 @bot.message_handler(commands=['reset'])
 def cmd_reset(message):
     reset_user_data(str(message.from_user.id))
-    bot.send_message(message.chat.id, "Fresh start! lekin mai tumhe bhoolungi nahi 🌸")
+    bot.send_message(message.chat.id, "Fresh start! lekin mai tumhe bhoolungi nahi")
 
 @bot.message_handler(content_types=['text'])
 def handle_text(message):
     if str(message.from_user.id) not in ALLOWED_IDS:
-        bot.send_message(message.chat.id, "Access nahi hai 🚫")
+        bot.send_message(message.chat.id, "Access nahi hai")
         return
     bot.send_chat_action(message.chat.id, 'typing')
     reply = ask_gf(str(message.from_user.id), message.text.strip())
+    if reply is None:
+        return  # API fail — koi reply nahi
     try:
         bot.send_message(message.chat.id, reply)
     except Exception:
         bot.send_message(message.chat.id, reply, parse_mode=None)
 
-@bot.message_handler(content_types=['photo', 'voice', 'video', 'sticker', 'document'])
-def handle_media(message):
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
     if str(message.from_user.id) not in ALLOWED_IDS:
-        bot.send_message(message.chat.id, "Access nahi hai 🚫")
+        bot.send_message(message.chat.id, "Access nahi hai")
         return
-    import random
-    bot.send_message(message.chat.id, random.choice([
-        "Arre yaar... seedha baat karo na 🥺",
-        "Ye kya bheja? Bolo kuch! 😄",
-        "Ignore mat karo... baat karo pehle 😤"
-    ]))
+    bot.send_chat_action(message.chat.id, 'typing')
+
+    # Largest photo lo
+    photo = message.photo[-1]
+    image_bytes, mime_type = get_photo_bytes(photo.file_id)
+
+    if image_bytes:
+        reply = describe_image_with_gemini(image_bytes, mime_type)
+    else:
+        reply = None
+
+    if reply is None:
+        return  # fail — silent
+
+    save_message(str(message.from_user.id), "assistant", reply)
+    try:
+        bot.send_message(message.chat.id, reply)
+    except Exception:
+        bot.send_message(message.chat.id, reply, parse_mode=None)
+
+
+@bot.message_handler(content_types=['sticker'])
+def handle_sticker(message):
+    if str(message.from_user.id) not in ALLOWED_IDS:
+        bot.send_message(message.chat.id, "Access nahi hai")
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+
+    sticker = message.sticker
+    image_bytes, mime_type = get_sticker_as_png(sticker.file_id)
+
+    if image_bytes:
+        reply = describe_image_with_gemini(image_bytes, mime_type)
+    else:
+        reply = None
+
+    if reply is None:
+        return
+
+    save_message(str(message.from_user.id), "assistant", reply)
+    try:
+        bot.send_message(message.chat.id, reply)
+    except Exception:
+        bot.send_message(message.chat.id, reply, parse_mode=None)
+
+
+@bot.message_handler(content_types=['voice', 'video', 'document'])
+def handle_other_media(message):
+    if str(message.from_user.id) not in ALLOWED_IDS:
+        bot.send_message(message.chat.id, "Access nahi hai")
+        return
+    # Voice/video/doc — text prompt bhejo AI ko
+    uid = str(message.from_user.id)
+    media_type = message.content_type
+    pseudo_msg = f"[User ne {media_type} bheja]"
+    reply = ask_gf(uid, pseudo_msg)
+    if reply is None:
+        return
+    try:
+        bot.send_message(message.chat.id, reply)
+    except Exception:
+        bot.send_message(message.chat.id, reply, parse_mode=None)
 
 
 # ─────────────────────────────────────────
@@ -596,7 +730,6 @@ if __name__ == "__main__":
     else:
         print("WEBHOOK_URL or TOKEN not set!")
 
-    # Start proactive message scheduler
     start_scheduler()
 
     port = int(os.environ.get('PORT', 5000))
